@@ -52,6 +52,32 @@ input[type=text],input[type=password],input[type=number],select{
 .switch{display:flex;align-items:center;gap:8px}
 .switch input{width:20px;height:20px}
 .hidden{display:none!important}
+body.viewing .wrap{max-width:1180px}
+.viewer{display:flex;gap:12px;align-items:flex-start}
+.side{width:260px;flex:none;position:sticky;top:12px;max-height:calc(100vh - 24px);overflow:auto;padding:8px}
+.side a{display:block;padding:8px 10px;border-radius:8px;color:var(--ink);text-decoration:none;cursor:pointer;overflow-wrap:anywhere;font-size:14px}
+.side a:hover{background:var(--hover)}
+.side a.cur{background:var(--accent);color:var(--accent-ink)}
+.side .dir{font-weight:600}
+.pane{flex:1;min-width:0}
+.vhead{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:10px}
+.vhead .title{flex:1;min-width:0;font-weight:600;overflow-wrap:anywhere}
+.vbody img{max-width:100%;height:auto;display:block;margin:0 auto;border-radius:8px}
+.vbody pre{white-space:pre-wrap;overflow-wrap:anywhere;font:14px/1.6 ui-monospace,Menlo,Consolas,monospace;margin:0}
+.md{overflow-wrap:anywhere;line-height:1.75}
+.md img{max-width:100%}
+.md pre{background:var(--bg);padding:10px;border-radius:8px;overflow:auto}
+.md table{border-collapse:collapse;display:block;overflow:auto}
+.md td,.md th{border:1px solid var(--line);padding:4px 8px}
+.md blockquote{margin:0;padding-left:12px;border-left:3px solid var(--line);color:var(--muted)}
+.vbody a{color:var(--accent)}
+.scrim{position:fixed;inset:0;background:rgba(0,0,0,.35);z-index:5}
+@media (max-width:860px){
+  .side{display:none;position:fixed;top:0;bottom:0;left:0;width:78vw;max-width:320px;max-height:none;z-index:6;
+    background:var(--card);border-right:1px solid var(--line);padding:16px}
+  body.side-open .side{display:block}
+}
+@media (min-width:861px){ #btnSide{display:none} .scrim{display:none} }
 #list input[type=checkbox]{display:none}
 body.editing #list input[type=checkbox]{display:block}
 .tools{display:flex;gap:8px;align-items:center;margin:8px 0}
@@ -112,6 +138,24 @@ body.editing #list input[type=checkbox]{display:block}
     <ul class="list" id="list"></ul>
   </section>
 
+  <section class="hidden" id="viewer">
+    <div class="viewer">
+      <nav class="side card" id="side"></nav>
+      <div class="pane card">
+        <div class="vhead">
+          <button class="btn" id="btnBack">← 返回</button>
+          <button class="btn" id="btnSide">目录</button>
+          <span class="title" id="vTitle"></span>
+          <button class="btn" id="btnPrev" title="上一个">‹</button>
+          <button class="btn" id="btnNext" title="下一个">›</button>
+        </div>
+        <div class="vbody" id="vBody"></div>
+        <div class="muted" style="margin-top:12px" id="vFoot"></div>
+      </div>
+    </div>
+  </section>
+  <div class="scrim hidden" id="scrim"></div>
+
   <section class="card hidden" id="welcome">
     <p style="margin-top:0">第一次用：点右上角「设置」，粘贴 GitHub 访问钥匙。</p>
   </section>
@@ -126,10 +170,12 @@ body.editing #list input[type=checkbox]{display:block}
 </div>
 <div class="toast" id="toast"></div>
 
+<script src="lib/marked.min.js"></script>
+<script src="lib/purify.min.js"></script>
 <script>
 (() => {
 const API = 'https://api.github.com';
-const SELF_REPO = 'vivitrash001/storage', SELF_FILES = ['index.html','.nojekyll','README.md'];
+const SELF_REPO = 'vivitrash001/storage', SELF_FILES = ['index.html','.nojekyll','README.md','lib'];
 const $ = id => document.getElementById(id);
 const store = {
   get(k, d){ try{ const v = localStorage.getItem('xcg.'+k); return v === null ? d : v; }catch{ return d; } },
@@ -265,7 +311,7 @@ function renderList(){
     const ico=document.createElement('span'); ico.className='ico'; ico.textContent = it.type==='dir'?'📁':(/\.(jpe?g|png|gif|webp|heic)$/i.test(it.name)?'🖼️':'📄');
     const nm=document.createElement('span'); nm.className='name'+(it.type==='dir'?' dir':''); nm.textContent=it.name+(it._new?'（新）':'');
     if(it.type==='dir') nm.onclick=()=>go(it.path);
-    else if(it.html_url){ nm.style.cursor='pointer'; nm.onclick=()=>window.open(it.html_url,'_blank','noopener'); }
+    else if(!it._new){ nm.style.cursor='pointer'; nm.onclick=()=>openFile(it.path); }
     const sz=document.createElement('span'); sz.className='size'; sz.textContent = it.type==='file'?fmtSize(it.size):'';
     const mode=$('sort').value, dv = mode.startsWith('mod')?it._mod:mode.startsWith('cre')?it._cre:null;
     if(dv){ const d=document.createElement('span'); d.className='date'; d.textContent=fmtDate(dv); sz.appendChild(d); }
@@ -378,6 +424,78 @@ const drop=$('drop');
 ['dragleave','drop'].forEach(t=>drop.addEventListener(t,e=>{e.preventDefault(); drop.classList.remove('over');}));
 drop.addEventListener('drop', e => upload(e.dataTransfer.files));
 window.addEventListener('dragover', e=>e.preventDefault()); window.addEventListener('drop', e=>e.preventDefault());
+
+// ---------- 浏览文件 ----------
+const isImg = n => /\.(jpe?g|png|gif|webp|svg|bmp|ico|avif)$/i.test(n);
+const isMd = n => /\.(md|markdown)$/i.test(n);
+const isText = n => /\.(txt|json|jsonl|js|mjs|ts|css|html?|xml|ya?ml|toml|csv|tsv|py|sh|log|ini|cfg|gitignore|gitkeep|nojekyll)$/i.test(n) || !/\.[^./]+$/.test(n);
+let viewUrl=null, viewPath=null;
+async function raw(path){
+  const r = await fetch(`${API}/repos/${state.repo}/contents/${encPath(path)}?ref=${encodeURIComponent(state.branch)}`,
+    { headers:{'Authorization':'Bearer '+state.token,'Accept':'application/vnd.github.raw','X-GitHub-Api-Version':'2022-11-28'}, cache:'no-store' });
+  if(!r.ok) throw new Error(r.status+' '+r.statusText);
+  return r.blob();
+}
+function esc(t){ return t.replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+function mdToHtml(t){
+  if(window.marked && window.DOMPurify) return DOMPurify.sanitize(marked.parse(t,{breaks:true,gfm:true}));
+  return '<pre>'+esc(t)+'</pre>';
+}
+function filesHere(){ return state.items.filter(i=>i.type==='file'); }
+function renderSide(){
+  const side=$('side'); side.innerHTML='';
+  const up=document.createElement('a'); up.className='dir'; up.textContent='📁 '+(state.path||state.repo.split('/')[1]);
+  up.onclick=()=>closeViewer(); side.appendChild(up);
+  for(const it of state.items){
+    const a=document.createElement('a'); a.textContent=(it.type==='dir'?'📁 ':'')+it.name;
+    if(it.type==='dir'){ a.className='dir'; a.onclick=()=>{ closeViewer(); go(it.path); }; }
+    else { if(it.path===viewPath) a.className='cur'; a.onclick=()=>openFile(it.path,true); }
+    side.appendChild(a);
+  }
+}
+async function openFile(path, replace){
+  viewPath=path; const name=path.split('/').pop();
+  document.body.classList.add('viewing'); document.body.classList.remove('side-open'); $('scrim').classList.add('hidden');
+  $('browser').classList.add('hidden'); $('bar').classList.add('hidden'); $('viewer').classList.remove('hidden');
+  const h='#view='+encodeURIComponent(state.repo+':'+path);
+  if(replace || location.hash.startsWith('#view=')) history.replaceState({v:1},'',h); else history.pushState({v:1},'',h);
+  $('vTitle').textContent=name; renderSide();
+  const fs=filesHere(), i=fs.findIndex(f=>f.path===path);
+  $('btnPrev').disabled = i<=0; $('btnNext').disabled = i<0 || i>=fs.length-1;
+  const it=state.items.find(x=>x.path===path);
+  $('vFoot').innerHTML=''; if(it){ const parts=[fmtSize(it.size)]; if(it._mod) parts.push('修改 '+fmtDate(it._mod)); if(it._cre) parts.push('上传 '+fmtDate(it._cre));
+    $('vFoot').textContent=parts.filter(Boolean).join(' · ');
+    if(it.html_url){ const a=document.createElement('a'); a.href=it.html_url; a.target='_blank'; a.rel='noopener'; a.textContent='  在 GitHub 打开'; $('vFoot').appendChild(a); } }
+  const body=$('vBody'); body.innerHTML='<div class="muted">读取中…</div>';
+  if(viewUrl){ URL.revokeObjectURL(viewUrl); viewUrl=null; }
+  try{
+    if(it && it.size>15*1048576 && !isImg(name)){ body.innerHTML='<div class="muted">文件太大，不在这里预览。</div>'; return; }
+    const blob = await raw(path); if(viewPath!==path) return;
+    if(isImg(name)){ viewUrl=URL.createObjectURL(blob); const img=new Image(); img.src=viewUrl; img.alt=name; body.innerHTML=''; body.appendChild(img); }
+    else if(/\.pdf$/i.test(name)){ viewUrl=URL.createObjectURL(new Blob([blob],{type:'application/pdf'}));
+      body.innerHTML=`<a href="${viewUrl}" target="_blank" rel="noopener">打开 PDF</a>`; }
+    else if(isMd(name)){ const d=document.createElement('div'); d.className='md'; d.innerHTML=mdToHtml(await blob.text()); body.innerHTML=''; body.appendChild(d); }
+    else if(isText(name) || blob.size<300000){ const t=await blob.text();
+      if(/\u0000/.test(t.slice(0,2000))) body.innerHTML='<div class="muted">这个文件不能在这里预览。</div>';
+      else { const pre=document.createElement('pre'); pre.textContent=t; body.innerHTML=''; body.appendChild(pre); } }
+    else body.innerHTML='<div class="muted">这个文件不能在这里预览。</div>';
+  }catch(e){ body.innerHTML='<div class="muted">读取失败：'+esc(e.message)+'</div>'; }
+}
+function closeViewer(fromPop){
+  if(!fromPop && location.hash.startsWith('#view=')){ history.back(); return; }
+  viewPath=null; if(viewUrl){ URL.revokeObjectURL(viewUrl); viewUrl=null; }
+  document.body.classList.remove('viewing','side-open'); $('scrim').classList.add('hidden');
+  $('viewer').classList.add('hidden'); $('browser').classList.remove('hidden'); updateBar();
+}
+function step(d){ const fs=filesHere(), i=fs.findIndex(f=>f.path===viewPath); const n=fs[i+d]; if(n) openFile(n.path,true); }
+$('btnBack').onclick=()=>closeViewer();
+$('btnPrev').onclick=()=>step(-1); $('btnNext').onclick=()=>step(1);
+$('btnSide').onclick=()=>{ document.body.classList.add('side-open'); $('scrim').classList.remove('hidden'); };
+$('scrim').onclick=()=>{ document.body.classList.remove('side-open'); $('scrim').classList.add('hidden'); };
+window.addEventListener('popstate',()=>{ if(!location.hash.startsWith('#view=') && viewPath) closeViewer(true); });
+document.addEventListener('keydown',e=>{ if(!viewPath || /INPUT|SELECT|TEXTAREA/.test(document.activeElement.tagName)) return;
+  if(e.key==='ArrowLeft') step(-1); else if(e.key==='ArrowRight') step(1); else if(e.key==='Escape') closeViewer(); });
+if(location.hash.startsWith('#view=')) history.replaceState(null,'',location.pathname);
 
 window.__xcg = { compressImage, state };
 start();
