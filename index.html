@@ -113,6 +113,7 @@ input[type=text],input[type=password],input[type=number],select{
 <script>
 (() => {
 const API = 'https://api.github.com';
+const SELF_REPO = 'vivitrash001/storage', SELF_FILES = ['index.html','.nojekyll','README.md'];
 const $ = id => document.getElementById(id);
 const store = {
   get(k, d){ try{ const v = localStorage.getItem('xcg.'+k); return v === null ? d : v; }catch{ return d; } },
@@ -179,6 +180,7 @@ async function go(path){
     try{ items = await gh('GET',`/repos/${state.repo}/contents/${encPath(path)}?ref=${encodeURIComponent(state.branch)}`); }
     catch(e){ if(e.status===404 && (path==='' || state.extraDirs[path])) items=[]; else throw e; }
     if(!Array.isArray(items)) items=[items];
+    if(state.repo===SELF_REPO && path==='') items=items.filter(i=>!SELF_FILES.includes(i.name));
     for(const d of Object.keys(state.extraDirs)){
       const parent = d.includes('/')?d.slice(0,d.lastIndexOf('/')):'';
       if(parent===path && !items.some(i=>i.path===d)) items.push({type:'dir',name:d.split('/').pop(),path:d,_new:true});
