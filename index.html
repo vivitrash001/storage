@@ -52,6 +52,12 @@ input[type=text],input[type=password],input[type=number],select{
 .switch{display:flex;align-items:center;gap:8px}
 .switch input{width:20px;height:20px}
 .hidden{display:none!important}
+#list input[type=checkbox]{display:none}
+body.editing #list input[type=checkbox]{display:block}
+.tools{display:flex;gap:8px;align-items:center;margin:8px 0}
+.tools select{width:auto;flex:1;min-width:0}
+.btn.on{background:var(--ink);color:var(--bg);border-color:var(--ink)}
+.size .date{display:block;text-align:right}
 </style>
 </head>
 <body>
@@ -93,7 +99,17 @@ input[type=text],input[type=password],input[type=number],select{
       <input type="file" id="picker" multiple class="hidden">
       <div class="log" id="log"></div>
     </div>
-    <ul class="list" id="list" style="margin-top:10px"></ul>
+    <div class="tools">
+      <select id="sort">
+        <option value="name">按名字</option>
+        <option value="mod-desc">修改时间：新 → 旧</option>
+        <option value="mod-asc">修改时间：旧 → 新</option>
+        <option value="cre-desc">上传时间：新 → 旧</option>
+        <option value="cre-asc">上传时间：旧 → 新</option>
+      </select>
+      <button class="btn" id="btnEdit">编辑</button>
+    </div>
+    <ul class="list" id="list"></ul>
   </section>
 
   <section class="card hidden" id="welcome">
@@ -120,7 +136,7 @@ const store = {
   set(k, v){ try{ localStorage.setItem('xcg.'+k, v); }catch{} },
   del(k){ try{ localStorage.removeItem('xcg.'+k); }catch{} }
 };
-const state = { token: store.get('token',''), user:null, repo:null, branch:null, path:'', items:[], extraDirs:{} };
+const state = { token: store.get('token',''), user:null, repo:null, branch:null, path:'', items:[], extraDirs:{}, edit:false, dates:{} };
 
 function toast(msg, ms=2600){ const t=$('toast'); t.textContent=msg; t.style.display='block';
   clearTimeout(toast._t); toast._t=setTimeout(()=>t.style.display='none', ms); }
@@ -137,6 +153,49 @@ async function gh(method, url, body){
     const e=new Error(r.status+' '+(m||r.statusText)); e.status=r.status; throw e; }
   return r.status===204?null:r.json();
 }
+
+async function ghRaw(url){
+  const r = await fetch(API+url, { headers:{ 'Authorization':'Bearer '+state.token,
+    'Accept':'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28' }, cache:'no-store' });
+  if(!r.ok){ const e=new Error(r.status+' '+r.statusText); e.status=r.status; throw e; }
+  return { link:r.headers.get('Link')||'', data: await r.json() };
+}
+async function pool(list, n, fn){ let i=0; await Promise.all(Array.from({length:Math.min(n,list.length)}, async()=>{ while(i<list.length){ const k=i++; await fn(list[k]); } })); }
+
+// ---------- 日期与排序 ----------
+async function fileDates(path, needCreated){
+  const key = state.repo+'@'+state.branch+':'+path;
+  const d = state.dates[key] || (state.dates[key] = {});
+  const base = `/repos/${state.repo}/commits?sha=${encodeURIComponent(state.branch)}&path=${encodeURIComponent(path)}&per_page=1`;
+  if(d.mod===undefined || (needCreated && d.cre===undefined)){
+    const r = await ghRaw(base);
+    const date = c => c && c.commit && (c.commit.committer||c.commit.author).date;
+    d.mod = date(r.data[0]) || null;
+    const m = r.link.match(/[?&]page=(\d+)>; rel="last"/);
+    if(!m) d.cre = d.mod;
+    else if(needCreated){ const last = await ghRaw(base+'&page='+m[1]); d.cre = date(last.data[0]) || null; }
+  }
+  return d;
+}
+async function applySort(items){
+  const mode = $('sort').value;
+  const byName = (a,b)=> (a.type===b.type?0:a.type==='dir'?-1:1) || a.name.localeCompare(b.name,'zh');
+  if(mode==='name'){ items.sort(byName); return; }
+  const kind = mode.startsWith('mod')?'mod':'cre', dir = mode.endsWith('desc')?-1:1;
+  const todo = items.filter(i=>!i._new);
+  let done=0; $('list').innerHTML=`<li class="muted">读取日期中… 0/${todo.length}</li>`;
+  await pool(todo, 6, async it=>{ try{ const d=await fileDates(it.path, kind==='cre'); it._mod=d.mod; it._cre=d.cre; }catch{} 
+    done++; const li=$('list').firstChild; if(li) li.textContent=`读取日期中… ${done}/${todo.length}`; });
+  const key = it => it['_'+kind] ? Date.parse(it['_'+kind]) : null;
+  items.sort((a,b)=>{ const x=key(a), y=key(b); if(x===y) return byName(a,b); if(x===null) return 1; if(y===null) return -1; return (x-y)*dir; });
+}
+const fmtDate = s => s ? new Date(s).toLocaleDateString('zh-CN',{year:'numeric',month:'2-digit',day:'2-digit'}).replace(/\//g,'-') : '';
+$('sort').value = store.get('sort','name');
+$('sort').onchange = () => { store.set('sort',$('sort').value); go(state.path); };
+$('btnEdit').onclick = () => { state.edit=!state.edit; document.body.classList.toggle('editing',state.edit);
+  $('btnEdit').textContent = state.edit?'完成':'编辑'; $('btnEdit').classList.toggle('on',state.edit);
+  if(!state.edit) document.querySelectorAll('#list input[type=checkbox]').forEach(c=>c.checked=false);
+  $('selAll').checked=false; updateBar(); };
 
 // ---------- 设置 ----------
 $('compress').checked = store.get('compress','1')==='1';
@@ -185,7 +244,7 @@ async function go(path){
       const parent = d.includes('/')?d.slice(0,d.lastIndexOf('/')):'';
       if(parent===path && !items.some(i=>i.path===d)) items.push({type:'dir',name:d.split('/').pop(),path:d,_new:true});
     }
-    items.sort((a,b)=> (a.type===b.type?0:a.type==='dir'?-1:1) || a.name.localeCompare(b.name,'zh'));
+    await applySort(items);
     state.items = items; renderList();
   }catch(e){ $('list').innerHTML=''; toast('读取失败：'+e.message,5000); }
 }
@@ -208,12 +267,14 @@ function renderList(){
     if(it.type==='dir') nm.onclick=()=>go(it.path);
     else if(it.html_url){ nm.style.cursor='pointer'; nm.onclick=()=>window.open(it.html_url,'_blank','noopener'); }
     const sz=document.createElement('span'); sz.className='size'; sz.textContent = it.type==='file'?fmtSize(it.size):'';
+    const mode=$('sort').value, dv = mode.startsWith('mod')?it._mod:mode.startsWith('cre')?it._cre:null;
+    if(dv){ const d=document.createElement('span'); d.className='date'; d.textContent=fmtDate(dv); sz.appendChild(d); }
     li.append(cb,ico,nm,sz); ul.appendChild(li);
   }
   $('selAll').checked=false; updateBar();
 }
 function selected(){ return [...document.querySelectorAll('#list input[type=checkbox]:checked')].map(c=>({path:c.dataset.path,type:c.dataset.type})); }
-function updateBar(){ const n=selected().length; $('bar').classList.toggle('hidden', !state.items.length);
+function updateBar(){ const n=selected().length; $('bar').classList.toggle('hidden', !state.edit || !state.items.length);
   $('selCount').textContent = n?`已选 ${n} 项`:''; $('btnDelete').disabled=!n; }
 $('selAll').onchange = e => { document.querySelectorAll('#list input[type=checkbox]:not(:disabled)').forEach(c=>c.checked=e.target.checked); updateBar(); };
 $('btnRefresh').onclick = () => go(state.path);
