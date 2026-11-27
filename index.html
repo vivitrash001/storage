@@ -80,6 +80,8 @@ body.viewing .wrap{max-width:1180px}
   body.side-open .side{display:block}
 }
 @media (min-width:861px){ #btnSide{display:none} .scrim{display:none} }
+@media (max-width:860px){ .vhead .title{flex-basis:100%;order:-1;font-size:15px} }
+#vFoot a{color:var(--accent);margin-left:8px}
 #list input[type=checkbox]{display:none}
 body.editing #list input[type=checkbox]{display:block}
 .tools{display:flex;gap:8px;align-items:center;margin:8px 0}
@@ -151,6 +153,7 @@ body.editing #list input[type=checkbox]{display:block}
           <span class="title" id="vTitle"></span>
           <button class="btn" id="btnPrev" title="上一个">‹</button>
           <button class="btn" id="btnNext" title="下一个">›</button>
+          <button class="btn danger" id="btnVDel">删除</button>
         </div>
         <div class="vbody" id="vBody"></div>
         <div class="muted" style="margin-top:12px" id="vFoot"></div>
@@ -490,7 +493,7 @@ async function openFile(path, replace){
   const it=state.items.find(x=>x.path===path);
   $('vFoot').innerHTML=''; if(it){ const parts=[fmtSize(it.size)]; if(it._mod) parts.push('修改 '+fmtDate(it._mod)); if(it._cre) parts.push('上传 '+fmtDate(it._cre));
     $('vFoot').textContent=parts.filter(Boolean).join(' · ');
-    if(it.html_url){ const a=document.createElement('a'); a.href=it.html_url; a.target='_blank'; a.rel='noopener'; a.textContent='  在 GitHub 打开'; $('vFoot').appendChild(a); } }
+    if(it.html_url){ const a=document.createElement('a'); a.href=it.html_url; a.target='_blank'; a.rel='noopener'; a.textContent='在 GitHub 打开'; $('vFoot').appendChild(a); } }
   const body=$('vBody'); body.innerHTML='<div class="muted">读取中…</div>';
   if(viewUrl){ URL.revokeObjectURL(viewUrl); viewUrl=null; }
   try{
@@ -514,6 +517,18 @@ function closeViewer(fromPop){
 }
 function step(d){ const fs=filesHere(), i=fs.findIndex(f=>f.path===viewPath); const n=fs[i+d]; if(n) openFile(n.path,true); }
 $('btnBack').onclick=()=>closeViewer();
+$('btnVDel').onclick = async () => {
+  const path=viewPath; if(!path) return; const name=path.split('/').pop();
+  if(!confirm(`删除「${name}」？\n\n删了还能从历史记录里找回。`)) return;
+  const btn=$('btnVDel'); btn.disabled=true; btn.textContent='删除中…';
+  try{
+    await commit([{path, content:null}], `删除 ${name}（小仓管）`);
+    const fs=filesHere(), i=fs.findIndex(f=>f.path===path); const nxt=fs[i+1]||fs[i-1];
+    state.items=state.items.filter(x=>x.path!==path); toast('删好了：'+name);
+    if(nxt) openFile(nxt.path,true); else { closeViewer(); go(state.path); }
+  }catch(e){ toast('删除失败：'+e.message,6000); }
+  finally{ btn.disabled=false; btn.textContent='删除'; }
+};
 $('btnPrev').onclick=()=>step(-1); $('btnNext').onclick=()=>step(1);
 $('btnSide').onclick=()=>{ document.body.classList.add('side-open'); $('scrim').classList.remove('hidden'); };
 $('scrim').onclick=()=>{ document.body.classList.remove('side-open'); $('scrim').classList.add('hidden'); };
